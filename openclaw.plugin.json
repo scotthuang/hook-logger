@@ -1,0 +1,8 @@
+{
+  "id": "hook-logger",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}
