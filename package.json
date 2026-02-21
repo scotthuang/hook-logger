@@ -1,11 +1,13 @@
 {
   "name": "@scotthuang/hook-logger",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Log all hook stages for debugging in OpenClaw",
   "main": "index.ts",
   "type": "module",
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "scripts": {
     "test": "vitest run",
