@@ -13,10 +13,30 @@ function ensureDir() {
   }
 }
 
-// Get log file path by date
+// Get local timezone timestamp (Asia/Shanghai)
+function getLocalTimestamp() {
+  return new Date().toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+// Get log file path by date (local timezone)
 function getLogFilePath() {
-  const date = new Date().toISOString().split("T")[0];
-  return path.join(LOG_DIR, `${date}.log`);
+  const now = new Date();
+  const dateStr = now.toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).replace(/\//g, "-");
+  return path.join(LOG_DIR, `${dateStr}.log`);
 }
 
 // Clean old logs (keep only last 3 days) - synchronous
@@ -52,7 +72,7 @@ function log(hookName, data) {
   ensureDir();
   cleanOldLogs();
   
-  const timestamp = new Date().toISOString();
+  const timestamp = getLocalTimestamp();
   const entry = `[${timestamp}] ${hookName} | ${JSON.stringify(data)}`;
   
   const logFile = getLogFilePath();
