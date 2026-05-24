@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 const HOME = os.homedir();
 const LOG_DIR = path.join(HOME, ".openclaw", "workspace", "logs", "hook-logger");
@@ -34,7 +35,7 @@ function getLogFilePath() {
     timeZone: "Asia/Shanghai",
     year: "numeric",
     month: "2-digit",
-    day: "2-digit"
+    day: "2-digit",
   }).replace(/\//g, "-");
   return path.join(LOG_DIR, `${dateStr}.log`);
 }
@@ -43,12 +44,12 @@ function getLogFilePath() {
 function cleanOldLogs() {
   try {
     if (!fs.existsSync(LOG_DIR)) return;
-    
+
     const files = fs.readdirSync(LOG_DIR);
     const now = Date.now();
     const msPerDay = 24 * 60 * 60 * 1000;
     const cutoff = now - (MAX_DAYS * msPerDay);
-    
+
     for (const file of files) {
       if (!file.endsWith(".log")) continue;
       const filePath = path.join(LOG_DIR, file);
@@ -67,191 +68,372 @@ function cleanOldLogs() {
 }
 
 // Log helper - synchronous
-function log(hookName, data) {
-  console.log("[hook-logger] Logging:", hookName);
+function log(hookName: string, data: unknown) {
   ensureDir();
   cleanOldLogs();
-  
+
   const timestamp = getLocalTimestamp();
   const entry = `[${timestamp}] ${hookName} | ${JSON.stringify(data)}`;
-  
+
   const logFile = getLogFilePath();
-  console.log("[hook-logger] Writing to:", logFile);
   fs.appendFileSync(logFile, entry + "\n");
 }
 
-export default {
+// Safe log wrapper - never let logging break the hook chain
+function safeLog(hookName: string, data: unknown) {
+  try {
+    log(hookName, data);
+  } catch (e) {
+    // Never break hook chain
+  }
+}
+
+export default definePluginEntry({
   id: "hook-logger",
-  name: "hook-logger",
-  description: "Log all hook stages for debugging",
-  
+  name: "Hook Logger",
+  description: "Log all hook stages for debugging in OpenClaw",
+
   register(api) {
     // before_model_resolve
-    api.on("before_model_resolve", (event, ctx) => {
-      log("before_model_resolve", { prompt: event.prompt?.slice(0, 100) });
-      return ctx;
+    api.on("before_model_resolve", (event) => {
+      safeLog("before_model_resolve", {
+        prompt: String(event.prompt ?? "").slice(0, 100),
+        attachments: event.attachments?.length ?? 0,
+      });
+    });
+
+    // agent_turn_prepare
+    api.on("agent_turn_prepare", (event) => {
+      safeLog("agent_turn_prepare", {
+        prompt: String(event.prompt ?? "").slice(0, 100),
+        messagesCount: Array.isArray(event.messages) ? event.messages.length : "unknown",
+        queuedInjectionsCount: event.queuedInjections?.length ?? 0,
+      });
     });
 
     // before_prompt_build
-    api.on("before_prompt_build", (event, ctx) => {
-      log("before_prompt_build", { 
-        prompt: event.prompt?.slice(0, 100),
-        messagesCount: Array.isArray(event.messages) ? event.messages.length : 'unknown'
+    api.on("before_prompt_build", (event) => {
+      safeLog("before_prompt_build", {
+        prompt: String(event.prompt ?? "").slice(0, 100),
+        messagesCount: Array.isArray(event.messages) ? event.messages.length : "unknown",
       });
-      return ctx;
     });
 
-    // before_agent_start
-    api.on("before_agent_start", (event, ctx) => {
-      log("before_agent_start", { 
-        prompt: event.prompt?.slice(0, 100),
-        sessionKey: ctx.sessionKey
+    // before_agent_run
+    api.on("before_agent_run", (event) => {
+      safeLog("before_agent_run", {
+        prompt: String(event.prompt ?? "").slice(0, 100),
+        channelId: event.channelId,
+        senderId: event.senderId,
+        senderIsOwner: event.senderIsOwner,
       });
-      return ctx;
+    });
+
+    // before_agent_reply
+    api.on("before_agent_reply", (event) => {
+      safeLog("before_agent_reply", {
+        cleanedBody: String(event.cleanedBody ?? "").slice(0, 100),
+      });
+    });
+
+    // model_call_started
+    api.on("model_call_started", (event) => {
+      safeLog("model_call_started", {
+        provider: event.provider,
+        model: event.model,
+        callId: event.callId,
+        api: event.api,
+        transport: event.transport,
+      });
+    });
+
+    // model_call_ended
+    api.on("model_call_ended", (event) => {
+      safeLog("model_call_ended", {
+        provider: event.provider,
+        model: event.model,
+        durationMs: event.durationMs,
+        outcome: event.outcome,
+        errorCategory: event.errorCategory,
+      });
     });
 
     // llm_input
-    api.on("llm_input", (event, ctx) => {
-      log("llm_input", { 
-        model: event.model, 
+    api.on("llm_input", (event) => {
+      safeLog("llm_input", {
         provider: event.provider,
-        prompt: event.prompt?.slice(0, 100)
+        model: event.model,
+        prompt: String(event.prompt ?? "").slice(0, 100),
+        systemPrompt: String(event.systemPrompt ?? "").slice(0, 100),
+        historyMessagesCount: Array.isArray(event.historyMessages) ? event.historyMessages.length : 0,
+        imagesCount: event.imagesCount,
+        toolsCount: Array.isArray(event.tools) ? event.tools.length : 0,
       });
-      return ctx;
     });
 
     // llm_output
-    api.on("llm_output", (event, ctx) => {
-      log("llm_output", { 
-        textsCount: event.assistantTexts?.length || 0,
-        stopReason: event.lastAssistant?.stop_reason
+    api.on("llm_output", (event) => {
+      safeLog("llm_output", {
+        provider: event.provider,
+        model: event.model,
+        assistantTextsCount: event.assistantTexts?.length ?? 0,
+        usage: event.usage,
+        resolvedRef: event.resolvedRef,
       });
-      return ctx;
+    });
+
+    // before_agent_finalize
+    api.on("before_agent_finalize", (event) => {
+      safeLog("before_agent_finalize", {
+        sessionKey: event.sessionKey,
+        sessionId: event.sessionId,
+        stopHookActive: event.stopHookActive,
+        provider: event.provider,
+        model: event.model,
+      });
     });
 
     // agent_end
-    api.on("agent_end", (event, ctx) => {
-      log("agent_end", { 
-        success: event.success, 
+    api.on("agent_end", (event) => {
+      safeLog("agent_end", {
+        success: event.success,
         error: event.error,
-        durationMs: event.durationMs
+        durationMs: event.durationMs,
+        messagesCount: Array.isArray(event.messages) ? event.messages.length : 0,
       });
-      return ctx;
     });
 
     // before_compaction
-    api.on("before_compaction", (event, ctx) => {
-      log("before_compaction", { 
+    api.on("before_compaction", (event) => {
+      safeLog("before_compaction", {
         messageCount: event.messageCount,
-        tokenCount: event.tokenCount
+        compactingCount: event.compactingCount,
+        tokenCount: event.tokenCount,
       });
-      return ctx;
     });
 
     // after_compaction
-    api.on("after_compaction", (event, ctx) => {
-      log("after_compaction", { 
+    api.on("after_compaction", (event) => {
+      safeLog("after_compaction", {
         messageCount: event.messageCount,
-        compactedCount: event.compactedCount
+        compactedCount: event.compactedCount,
+        tokenCount: event.tokenCount,
       });
-      return ctx;
     });
 
     // before_reset
-    api.on("before_reset", (event, ctx) => {
-      log("before_reset", { reason: event.reason });
-      return ctx;
+    api.on("before_reset", (event) => {
+      safeLog("before_reset", {
+        reason: event.reason,
+        sessionFile: event.sessionFile,
+      });
+    });
+
+    // inbound_claim
+    api.on("inbound_claim", (event) => {
+      safeLog("inbound_claim", {
+        content: String(event.content ?? "").slice(0, 100),
+        channel: event.channel,
+        senderId: event.senderId,
+        isGroup: event.isGroup,
+        commandAuthorized: event.commandAuthorized,
+      });
     });
 
     // message_received
-    api.on("message_received", (event, ctx) => {
-      log("message_received", { 
-        from: event.from, 
-        content: event.content?.slice(0, 100)
+    api.on("message_received", (event) => {
+      safeLog("message_received", {
+        from: event.from,
+        content: String(event.content ?? "").slice(0, 100),
+        channelId: event.channelId,
+        threadId: event.threadId,
+        messageId: event.messageId,
       });
-      return ctx;
     });
 
     // message_sending
-    api.on("message_sending", (event, ctx) => {
-      log("message_sending", { 
-        to: event.to, 
-        content: event.content?.slice(0, 100)
+    api.on("message_sending", (event) => {
+      safeLog("message_sending", {
+        to: event.to,
+        content: String(event.content ?? "").slice(0, 100),
+        replyToId: event.replyToId,
+        threadId: event.threadId,
       });
-      return ctx;
     });
 
     // message_sent
-    api.on("message_sent", (event, ctx) => {
-      log("message_sent", { 
-        to: event.to, 
+    api.on("message_sent", (event) => {
+      safeLog("message_sent", {
+        to: event.to,
         success: event.success,
-        error: event.error
+        error: event.error,
       });
-      return ctx;
+    });
+
+    // before_dispatch
+    api.on("before_dispatch", (event) => {
+      safeLog("before_dispatch", {
+        content: String(event.content ?? "").slice(0, 100),
+        channel: event.channel,
+        sessionKey: event.sessionKey,
+        senderId: event.senderId,
+        isGroup: event.isGroup,
+      });
+    });
+
+    // reply_dispatch
+    api.on("reply_dispatch", (event) => {
+      safeLog("reply_dispatch", {
+        sessionKey: event.ctx?.sessionKey,
+        sendPolicy: event.sendPolicy,
+        isTailDispatch: event.isTailDispatch,
+        shouldSendToolSummaries: event.shouldSendToolSummaries,
+        expectsCompletionMessage: event.expectsCompletionMessage,
+      });
     });
 
     // before_tool_call
-    api.on("before_tool_call", (event, ctx) => {
-      log("before_tool_call", { 
-        tool: event.toolName, 
-        args: JSON.stringify(event.params?.args || {}).slice(0, 200)
+    api.on("before_tool_call", (event) => {
+      safeLog("before_tool_call", {
+        toolName: event.toolName,
+        toolCallId: event.toolCallId,
+        params: JSON.stringify(event.params ?? {}).slice(0, 200),
+        toolKind: event.toolKind,
+        runId: event.runId,
       });
-      return ctx;
     });
 
     // after_tool_call
-    api.on("after_tool_call", (event, ctx) => {
-      log("after_tool_call", { 
-        tool: event.toolName,
-        result: JSON.stringify(event.result || event.error || {}).slice(0, 200)
+    api.on("after_tool_call", (event) => {
+      safeLog("after_tool_call", {
+        toolName: event.toolName,
+        toolCallId: event.toolCallId,
+        durationMs: event.durationMs,
+        error: event.error,
+        result: JSON.stringify(event.result ?? {}).slice(0, 200),
       });
-      return ctx;
     });
 
     // tool_result_persist
-    api.on("tool_result_persist", (event, ctx) => {
-      log("tool_result_persist", { 
+    api.on("tool_result_persist", (event) => {
+      safeLog("tool_result_persist", {
         toolName: event.toolName,
-        toolCallId: event.toolCallId
+        toolCallId: event.toolCallId,
+        isSynthetic: event.isSynthetic,
       });
-      return ctx;
     });
 
     // before_message_write
-    api.on("before_message_write", (event, ctx) => {
-      log("before_message_write", { 
+    api.on("before_message_write", (event) => {
+      safeLog("before_message_write", {
         role: event.message?.role,
-        content: JSON.stringify(event.message?.content || '').slice(0, 100)
+        content: JSON.stringify(event.message?.content ?? "").slice(0, 100),
       });
-      return ctx;
     });
 
     // session_start
-    api.on("session_start", (event, ctx) => {
-      log("session_start", { 
+    api.on("session_start", (event) => {
+      safeLog("session_start", {
+        sessionId: event.sessionId,
         sessionKey: event.sessionKey,
-        agentId: event.agentId
+        resumedFrom: event.resumedFrom,
       });
-      return ctx;
     });
 
     // session_end
-    api.on("session_end", (event, ctx) => {
-      log("session_end", { sessionKey: event.sessionKey });
-      return ctx;
+    api.on("session_end", (event) => {
+      safeLog("session_end", {
+        sessionId: event.sessionId,
+        sessionKey: event.sessionKey,
+        reason: event.reason,
+        messageCount: event.messageCount,
+        durationMs: event.durationMs,
+      });
+    });
+
+    // subagent_spawning
+    api.on("subagent_spawning", (event) => {
+      safeLog("subagent_spawning", {
+        childSessionKey: event.childSessionKey,
+        agentId: event.agentId,
+        mode: event.mode,
+        label: event.label,
+        threadRequested: event.threadRequested,
+      });
+    });
+
+    // subagent_delivery_target
+    api.on("subagent_delivery_target", (event) => {
+      safeLog("subagent_delivery_target", {
+        childSessionKey: event.childSessionKey,
+        requesterSessionKey: event.requesterSessionKey,
+        spawnMode: event.spawnMode,
+        expectsCompletionMessage: event.expectsCompletionMessage,
+      });
+    });
+
+    // subagent_spawned
+    api.on("subagent_spawned", (event) => {
+      safeLog("subagent_spawned", {
+        childSessionKey: event.childSessionKey,
+        runId: event.runId,
+        agentId: event.agentId,
+        mode: event.mode,
+        label: event.label,
+      });
+    });
+
+    // subagent_ended
+    api.on("subagent_ended", (event) => {
+      safeLog("subagent_ended", {
+        targetSessionKey: event.targetSessionKey,
+        targetKind: event.targetKind,
+        outcome: event.outcome,
+        reason: event.reason,
+        error: event.error,
+      });
     });
 
     // gateway_start
-    api.on("gateway_start", (event, ctx) => {
-      log("gateway_start", { port: event.port, host: event.host });
-      return ctx;
+    api.on("gateway_start", (event) => {
+      safeLog("gateway_start", { port: event.port });
     });
 
     // gateway_stop
-    api.on("gateway_stop", (event, ctx) => {
-      log("gateway_stop", {});
-      return ctx;
+    api.on("gateway_stop", (event) => {
+      safeLog("gateway_stop", { reason: event.reason });
     });
-  }
-};
+
+    // heartbeat_prompt_contribution
+    api.on("heartbeat_prompt_contribution", (event) => {
+      safeLog("heartbeat_prompt_contribution", {
+        sessionKey: event.sessionKey,
+        agentId: event.agentId,
+        heartbeatName: event.heartbeatName,
+      });
+    });
+
+    // cron_changed
+    api.on("cron_changed", (event) => {
+      safeLog("cron_changed", {
+        action: event.action,
+        jobId: event.jobId,
+        status: event.status,
+        summary: event.summary?.slice(0, 200),
+        sessionTarget: event.sessionTarget,
+        agentId: event.agentId,
+      });
+    });
+
+    // before_install
+    api.on("before_install", (event) => {
+      safeLog("before_install", {
+        targetType: event.targetType,
+        targetName: event.targetName,
+        sourcePath: event.sourcePath,
+        requestKind: event.request?.kind,
+        requestMode: event.request?.mode,
+      });
+    });
+  },
+});
